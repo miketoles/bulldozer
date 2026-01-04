@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Bulldozer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@700&family=Righteous&display=swap" rel="stylesheet">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: none;
+    }
+
+    body {
+      font-family: 'Fredoka', sans-serif;
+      background: #87CEEB;
+      overflow: hidden;
+      position: fixed;
+      width: 100%;
+      height: 100%;
+    }
+
+    #gameCanvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .ui {
+      position: fixed;
+      top: 20px;
+      left: 20px;
+      right: 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      pointer-events: none;
+      z-index: 100;
+    }
+
+    .score-panel {
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(10px);
+      padding: 12px 20px;
+      border-radius: 16px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+      pointer-events: auto;
+    }
+
+    .score-title {
+      font-size: 12px;
+      color: #F4A460;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 2px;
+    }
+
+    .score-value {
+      font-family: 'Righteous', cursive;
+      font-size: 28px;
+      color: #D2691E;
+      text-shadow: 2px 2px 0px rgba(139, 69, 19, 0.2);
+    }
+
+    .reset-btn {
+      background: linear-gradient(135deg, #FF6B6B 0%, #FF8E53 100%);
+      color: white;
+      border: none;
+      padding: 12px 20px;
+      border-radius: 16px;
+      font-family: 'Fredoka', sans-serif;
+      font-size: 16px;
+      font-weight: 700;
+      box-shadow: 0 4px 20px rgba(255, 107, 107, 0.4);
+      cursor: pointer;
+      pointer-events: auto;
+      transition: all 0.2s;
+    }
+
+    .reset-btn:active {
+      transform: scale(0.95);
+    }
+
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+
+  <div class="ui">
+    <div class="score-panel">
+      <div class="score-title">Dirt Moved</div>
+      <div class="score-value" id="score">0</div>
+    </div>
+    <button class="reset-btn" onclick="game.reset()">Reset</button>
+  </div>
+
+  <script>
+    const game = {
+      canvas: null,
+      ctx: null,
+      width: 0,
+      height: 0,
+
+      // Terrain - array of height values
+      terrain: [],
+      terrainVelocity: [], // velocity for each column
+      columnWidth: 5, // pixels per terrain column
+      baseGroundY: 0, // Y position of ground level
+      maxDirtHeight: 200, // maximum dirt pile height
+
+      // World/Camera
+      cameraX: 0, // world X position of camera left edge
+      worldWidth: 10000, // initial world width (will expand)
+
+      // Bulldozer
+      bulldozer: {
+        worldX: 0, // position in world coordinates
+        y: 0, // Y position (sits on terrain)
+        width: 80,
+        height: 50,
+        facingRight: true,
+        flipProgress: 1, // 0 to 1, used for smooth rotation during direction change
+        scoopAngle: 0, // -45 to +45 degrees
+        trackOffset: 0 // for track animation
+      },
+
+      // Touch/Input
+      isDragging: false,
+      fingerX: 0,
+      fingerY: 0,
+      startFingerY: 0, // Where finger first touched - for relative scoop control
+
+      // Score
+      score: 0,
+
+      // Physics constants
+      angleOfRepose: 0.6, // max height difference ratio between adjacent columns
+      dirtSettleSpeed: 0.3,
+
+      init() {
+        this.canvas = document.getElementById('gameCanvas');
+        this.ctx = this.canvas.getContext('2d');
+
+        this.resize();
+        window.addEventListener('resize', () => this.resize());
+
+        // Touch events
+        this.canvas.addEventListener('touchstart', (e) => this.handleTouchStart(e), { passive: false });
+        this.canvas.addEventListener('touchmove', (e) => this.handleTouchMove(e), { passive: false });
+        this.canvas.addEventListener('touchend', (e) => this.handleTouchEnd(e), { passive: false });
+
+        // Mouse events
+        this.canvas.addEventListener('mousedown', (e) => this.handleMouseDown(e));
+        this.canvas.addEventListener('mousemove', (e) => this.handleMouseMove(e));
+        this.canvas.addEventListener('mouseup', (e) => this.handleMouseUp(e));
+        this.canvas.addEventListener('mouseleave', (e) => this.handleMouseUp(e));
+
+        this.reset();
+        this.gameLoop();
+      },
+
+      resize() {
+        this.width = window.innerWidth;
+        this.height = window.innerHeight;
+        this.canvas.width = this.width;
+        this.canvas.height = this.height;
+
+        // Ground level is 60% down the screen - room for underground control
+        this.baseGroundY = this.height * 0.6;
+      },
+
+      generateTerrain() {
+        const numColumns = Math.ceil(this.worldWidth / this.columnWidth);
+        this.terrain = [];
+        this.terrainVelocity = [];
+
+        for (let i = 0; i < numColumns; i++) {
+          // Generate rolling hills using sine waves
+          const x = i * this.columnWidth;
+          let height = 30; // base dirt height
+
+          // Add multiple sine waves for natural look
+          height += Math.sin(x * 0.005) * 40;
+          height += Math.sin(x * 0.015) * 20;
+          height += Math.sin(x * 0.003) * 30;
+
+          // Add some random piles
+          const distFromCenter = Math.abs(x - this.worldWidth / 2);
+          if (distFromCenter < 500) {
+            height += Math.sin(distFromCenter * 0.02) * 50;
+          }
+
+          // Clamp height
+          height = Math.max(10, Math.min(this.maxDirtHeight, height));
+
+          this.terrain.push(height);
+          this.terrainVelocity.push(0);
+        }
+      },
+
+      reset() {
+        this.generateTerrain();
+
+        // Position bulldozer at center of world
+        this.bulldozer.worldX = this.worldWidth / 2;
+        this.bulldozer.facingRight = true;
+        this.bulldozer.flipProgress = 1; // Start fully facing right
+        this.bulldozer.scoopAngle = 0;
+        this.bulldozer.trackOffset = 0;
+
+        // Center camera on bulldozer
+        this.cameraX = this.bulldozer.worldX - this.width / 2;
+
+        this.score = 0;
+        this.updateScore();
+      },
+
+      getCanvasCoords(clientX, clientY) {
+        const rect = this.canvas.getBoundingClientRect();
+        return {
+          x: clientX - rect.left,
+          y: clientY - rect.top
+        };
+      },
+
+      handleTouchStart(e) {
+        e.preventDefault();
+        const touch = e.touches[0];
+        const coords = this.getCanvasCoords(touch.clientX, touch.clientY);
+        this.isDragging = true;
+        this.fingerX = coords.x;
+        this.fingerY = coords.y;
+        this.startFingerY = coords.y; // Remember starting Y for relative scoop control
+      },
+
+      handleTouchMove(e) {
+        e.preventDefault();
+        if (!this.isDragging) return;
+        const touch = e.touches[0];
+        const coords = this.getCanvasCoords(touch.clientX, touch.clientY);
+        this.fingerX = coords.x;
+        this.fingerY = coords.y;
+      },
+
+      handleTouchEnd(e) {
+        e.preventDefault();
+        this.isDragging = false;
+      },
+
+      handleMouseDown(e) {
+        const coords = this.getCanvasCoords(e.clientX, e.clientY);
+        this.isDragging = true;
+        this.fingerX = coords.x;
+        this.fingerY = coords.y;
+        this.startFingerY = coords.y; // Remember starting Y for relative scoop control
+      },
+
+      handleMouseMove(e) {
+        if (!this.isDragging) return;
+        const coords = this.getCanvasCoords(e.clientX, e.clientY);
+        this.fingerX = coords.x;
+        this.fingerY = coords.y;
+      },
+
+      handleMouseUp(e) {
+        this.isDragging = false;
+      },
+
+      // Convert screen X to world X
+      screenToWorldX(screenX) {
+        return screenX + this.cameraX;
+      },
+
+      // Convert world X to screen X
+      worldToScreenX(worldX) {
+        return worldX - this.cameraX;
+      },
+
+      // Get terrain height at world X position
+      getTerrainHeight(worldX) {
+        const col = Math.floor(worldX / this.columnWidth);
+        if (col < 0 || col >= this.terrain.length) return 0;
+        return this.terrain[col];
+      },
+
+      // Get terrain column index for world X
+      getTerrainColumn(worldX) {
+        return Math.floor(worldX / this.columnWidth);
+      },
+
+      update() {
+        if (this.isDragging) {
+          // Convert finger position to world coordinates
+          const fingerWorldX = this.screenToWorldX(this.fingerX);
+
+          // Bulldozer screen position (for scoop angle calculation)
+          const bulldozerScreenX = this.worldToScreenX(this.bulldozer.worldX);
+          const bulldozerScreenY = this.baseGroundY - this.getTerrainHeight(this.bulldozer.worldX) - this.bulldozer.height / 2;
+
+          // --- HORIZONTAL MOVEMENT ---
+          // Bulldozer chases finger - speed proportional to distance
+          const dx = fingerWorldX - this.bulldozer.worldX;
+          const speed = Math.abs(dx) * 0.15; // Responsive following
+
+          if (Math.abs(dx) > 5) {
+            // Determine facing direction based on movement
+            const movingRight = dx > 0;
+
+            // Calculate dirt resistance based on scoop angle
+            let resistance = 1;
+
+            // Scoop raised (negative angle) = no resistance, glide over dirt
+            // Scoop level (0) = minimal resistance
+            // Scoop lowered (positive angle) = heavy resistance, digging through dirt
+
+            if (this.bulldozer.scoopAngle > -10) { // Scoop is not fully raised
+              // How deep is the scoop digging? (0 = level, 1 = max depth)
+              const scoopDepth = Math.max(0, this.bulldozer.scoopAngle) / 70;
+
+              // Check dirt ahead
+              const checkX = this.bulldozer.worldX + (movingRight ? 50 : -50);
+              const dirtAhead = this.getTerrainHeight(checkX);
+              const currentDirt = this.getTerrainHeight(this.bulldozer.worldX);
+
+              // Base resistance from scoop touching ground
+              let baseResistance = 0.15 * scoopDepth; // Up to 15% slowdown just from digging
+
+              // Extra resistance from dirt piles ahead
+              if (dirtAhead > 5) {
+                // More dirt = more resistance, scaled by scoop depth
+                const dirtFactor = (dirtAhead / 100) * (0.5 + scoopDepth);
+                baseResistance += dirtFactor;
+              }
+
+              // Even more resistance if pushing into a pile
+              const dirtDiff = dirtAhead - currentDirt;
+              if (dirtDiff > 0 && scoopDepth > 0.1) {
+                // Pushing uphill into dirt - significant resistance
+                baseResistance += (dirtDiff / 50) * scoopDepth;
+              }
+
+              // Apply resistance (cap at 80% slowdown so you can still move)
+              resistance = Math.max(0.2, 1 - baseResistance);
+            }
+            // Scoop fully raised = resistance stays at 1 (no slowdown)
+
+            // Apply movement with resistance
+            const moveAmount = Math.sign(dx) * Math.min(speed * resistance, Math.abs(dx));
+            this.bulldozer.worldX += moveAmount;
+
+            // Handle turning - immediately start rotating when finger indicates new direction
+            if (movingRight !== this.bulldozer.facingRight) {
+              // Start the flip animation
+              this.bulldozer.flipProgress = 0;
+              this.bulldozer.facingRight = movingRight;
+            }
+
+            // Animate tracks
+            this.bulldozer.trackOffset += moveAmount * 0.1;
+
+            // Push dirt if scoop is lowered (positive angle = digging)
+            if (this.bulldozer.scoopAngle > 5) {
+              this.pushDirt(movingRight, Math.abs(moveAmount));
+            }
+          }
+
+          // --- VERTICAL CONTROL (SCOOP ANGLE) ---
+          // RELATIVE control - scoop starts level, moves based on finger movement from start
+          // Finger moves UP from start = scoop raises
+          // Finger moves DOWN from start = scoop lowers
+          const fingerDeltaY = this.fingerY - this.startFingerY;
+
+          // High sensitivity - scoop follows finger like a puppet
+          // Negative angle = scoop raised, Positive angle = scoop lowered
+          const targetAngle = fingerDeltaY * 1.2;
+          // Limit: -70 up (raised high), +25 down (just touching ground, not below)
+          const clampedAngle = Math.max(-70, Math.min(25, targetAngle));
+
+          // Nearly instant response - puppet-like direct control
+          this.bulldozer.scoopAngle += (clampedAngle - this.bulldozer.scoopAngle) * 0.8;
+        }
+
+        // Animate the flip rotation (quick but smooth)
+        if (this.bulldozer.flipProgress < 1) {
+          this.bulldozer.flipProgress += 0.15; // Complete flip in ~7 frames
+          if (this.bulldozer.flipProgress > 1) {
+            this.bulldozer.flipProgress = 1;
+          }
+        }
+
+        // Update bulldozer Y position to sit on terrain
+        const terrainHeight = this.getTerrainHeight(this.bulldozer.worldX);
+        this.bulldozer.y = this.baseGroundY - terrainHeight - this.bulldozer.height / 2;
+
+        // Update camera to follow bulldozer
+        const targetCameraX = this.bulldozer.worldX - this.width / 2;
+        this.cameraX += (targetCameraX - this.cameraX) * 0.1;
+
+        // Extend world if needed (infinite terrain)
+        this.extendWorldIfNeeded();
+
+        // Apply dirt physics
+        this.updateDirtPhysics();
+      },
+
+      // === DIRT MODE: Set to 'disappear' or 'push' ===
+      dirtMode: 'disappear',
+
+      // NEW MODE: Dirt disappears when scooped
+      removeDirt(movingRight, moveAmount) {
+        const scoopDepth = Math.abs(this.bulldozer.scoopAngle) / 70; // 0 to 1
+        const scoopWorldX = this.bulldozer.worldX + (this.bulldozer.facingRight ? 45 : -45);
+        const scoopCol = this.getTerrainColumn(scoopWorldX);
+
+        // How much dirt to remove based on scoop depth and movement
+        const removeAmount = moveAmount * scoopDepth * 3;
+
+        // Columns affected by scoop (wider scoop for more satisfying dig)
+        const scoopWidth = 5;
+
+        for (let i = 0; i < scoopWidth; i++) {
+          const col = scoopCol + (movingRight ? i : -i);
+          if (col >= 0 && col < this.terrain.length) {
+            const dirtToRemove = Math.min(this.terrain[col], removeAmount);
+
+            if (dirtToRemove > 0) {
+              // Dirt just disappears!
+              this.terrain[col] -= dirtToRemove;
+              this.score += Math.floor(dirtToRemove);
+            }
+          }
+        }
+
+        this.updateScore();
+      },
+
+      // OLD MODE: Dirt gets pushed and piles up (preserved for reference)
+      pushDirtPile(pushingRight, moveAmount) {
+        const scoopDepth = Math.abs(this.bulldozer.scoopAngle) / 70; // 0 to 1
+        const scoopWorldX = this.bulldozer.worldX + (this.bulldozer.facingRight ? 45 : -45);
+        const scoopCol = this.getTerrainColumn(scoopWorldX);
+
+        // How much dirt to move
+        const pushAmount = moveAmount * scoopDepth * 2;
+
+        // Columns affected by scoop
+        const scoopWidth = 3; // columns
+
+        for (let i = 0; i < scoopWidth; i++) {
+          const col = scoopCol + (pushingRight ? i : -i);
+          if (col >= 0 && col < this.terrain.length) {
+            const dirtToPush = Math.min(this.terrain[col], pushAmount);
+
+            if (dirtToPush > 0) {
+              // Remove dirt from current column
+              this.terrain[col] -= dirtToPush;
+
+              // Add to adjacent column (in push direction)
+              const targetCol = col + (pushingRight ? 1 : -1);
+              if (targetCol >= 0 && targetCol < this.terrain.length) {
+                this.terrain[targetCol] += dirtToPush;
+                this.terrainVelocity[targetCol] = pushingRight ? 2 : -2;
+
+                this.score += Math.floor(dirtToPush);
+              }
+            }
+          }
+        }
+
+        this.updateScore();
+      },
+
+      // Wrapper that calls the active dirt mode
+      pushDirt(movingRight, moveAmount) {
+        if (this.dirtMode === 'disappear') {
+          this.removeDirt(movingRight, moveAmount);
+        } else {
+          this.pushDirtPile(movingRight, moveAmount);
+        }
+      },
+
+      updateDirtPhysics() {
+        // Apply velocity and settling
+        for (let i = 0; i < this.terrain.length; i++) {
+          // Apply velocity (dirt sliding)
+          if (Math.abs(this.terrainVelocity[i]) > 0.1) {
+            const moveDir = Math.sign(this.terrainVelocity[i]);
+            const moveAmount = Math.min(Math.abs(this.terrainVelocity[i]), this.terrain[i] * 0.1);
+
+            const targetCol = i + moveDir;
+            if (targetCol >= 0 && targetCol < this.terrain.length) {
+              this.terrain[i] -= moveAmount;
+              this.terrain[targetCol] += moveAmount;
+            }
+
+            // Friction
+            this.terrainVelocity[i] *= 0.9;
+            if (Math.abs(this.terrainVelocity[i]) < 0.1) {
+              this.terrainVelocity[i] = 0;
+            }
+          }
+
+          // Angle of repose - dirt settles if too steep
+          if (i > 0 && i < this.terrain.length - 1) {
+            const heightDiffLeft = this.terrain[i] - this.terrain[i - 1];
+            const heightDiffRight = this.terrain[i] - this.terrain[i + 1];
+
+            const maxDiff = this.columnWidth * this.angleOfRepose;
+
+            // Flow left if too steep
+            if (heightDiffLeft > maxDiff) {
+              const flow = (heightDiffLeft - maxDiff) * this.dirtSettleSpeed;
+              this.terrain[i] -= flow;
+              this.terrain[i - 1] += flow;
+            }
+
+            // Flow right if too steep
+            if (heightDiffRight > maxDiff) {
+              const flow = (heightDiffRight - maxDiff) * this.dirtSettleSpeed;
+              this.terrain[i] -= flow;
+              this.terrain[i + 1] += flow;
+            }
+          }
+
+          // Clamp terrain height
+          this.terrain[i] = Math.max(0, Math.min(this.maxDirtHeight, this.terrain[i]));
+        }
+      },
+
+      extendWorldIfNeeded() {
+        const bufferZone = this.width * 2;
+
+        // Extend right
+        while (this.bulldozer.worldX > this.worldWidth - bufferZone) {
+          const x = this.terrain.length * this.columnWidth;
+          let height = 30 + Math.sin(x * 0.005) * 40 + Math.sin(x * 0.015) * 20;
+          height = Math.max(10, Math.min(this.maxDirtHeight, height));
+
+          this.terrain.push(height);
+          this.terrainVelocity.push(0);
+          this.worldWidth += this.columnWidth;
+        }
+
+        // Extend left (prepend terrain)
+        while (this.bulldozer.worldX < bufferZone && this.cameraX > 0) {
+          // For simplicity, we'll just prevent going too far left for now
+          // Full infinite in both directions would require index shifting
+        }
+      },
+
+      draw() {
+        const ctx = this.ctx;
+
+        // --- SKY ---
+        const skyGradient = ctx.createLinearGradient(0, 0, 0, this.baseGroundY);
+        skyGradient.addColorStop(0, '#87CEEB');
+        skyGradient.addColorStop(1, '#E0F4FF');
+        ctx.fillStyle = skyGradient;
+        ctx.fillRect(0, 0, this.width, this.height);
+
+        // --- DISTANT HILLS (parallax) ---
+        ctx.fillStyle = 'rgba(139, 119, 165, 0.3)';
+        for (let i = 0; i < 3; i++) {
+          const hillX = ((i * 400 - this.cameraX * 0.1) % (this.width + 400)) - 200;
+          ctx.beginPath();
+          ctx.moveTo(hillX, this.baseGroundY);
+          ctx.quadraticCurveTo(hillX + 150, this.baseGroundY - 150 - i * 30, hillX + 300, this.baseGroundY);
+          ctx.fill();
+        }
+
+        // --- TERRAIN ---
+        const startCol = Math.max(0, Math.floor(this.cameraX / this.columnWidth) - 1);
+        const endCol = Math.min(this.terrain.length, Math.ceil((this.cameraX + this.width) / this.columnWidth) + 1);
+
+        for (let col = startCol; col < endCol; col++) {
+          const height = this.terrain[col];
+          const screenX = col * this.columnWidth - this.cameraX;
+          const groundY = this.baseGroundY;
+
+          // Draw dirt column with depth-based coloring
+          if (height > 0) {
+            const columnHeight = height;
+
+            // Create gradient for depth effect
+            const dirtGradient = ctx.createLinearGradient(0, groundY - columnHeight, 0, groundY);
+            dirtGradient.addColorStop(0, '#D2B48C'); // Light brown (surface)
+            dirtGradient.addColorStop(0.3, '#A0522D'); // Medium brown
+            dirtGradient.addColorStop(1, '#5D4037'); // Dark brown (deep)
+
+            ctx.fillStyle = dirtGradient;
+            ctx.fillRect(screenX, groundY - columnHeight, this.columnWidth + 1, columnHeight);
+
+            // Grass/surface line
+            ctx.fillStyle = '#7CB342';
+            ctx.fillRect(screenX, groundY - columnHeight - 2, this.columnWidth + 1, 3);
+          }
+        }
+
+        // --- BEDROCK (below ground level) ---
+        ctx.fillStyle = '#3E2723';
+        ctx.fillRect(0, this.baseGroundY, this.width, this.height - this.baseGroundY);
+
+        // --- BULLDOZER ---
+        this.drawBulldozer();
+
+        // --- FINGER INDICATOR ---
+        if (this.isDragging) {
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(this.fingerX, this.fingerY, 25, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+      },
+
+      drawBulldozer() {
+        const ctx = this.ctx;
+        const screenX = this.worldToScreenX(this.bulldozer.worldX);
+        const screenY = this.bulldozer.y;
+
+        ctx.save();
+        ctx.translate(screenX, screenY);
+
+        // Smooth rotation during direction change
+        // scaleX animates from old direction to new direction through 0 (sideways)
+        let scaleX;
+        if (this.bulldozer.facingRight) {
+          // Turning from left to right: -1 → 0 → 1
+          scaleX = 2 * this.bulldozer.flipProgress - 1;
+        } else {
+          // Turning from right to left: 1 → 0 → -1
+          scaleX = 1 - 2 * this.bulldozer.flipProgress;
+        }
+        ctx.scale(scaleX, 1);
+
+        // --- TRACKS (drawn first, body sits on top) ---
+        // Track frame - rounded rectangle (pill shape)
+        ctx.fillStyle = '#2F4F4F';
+        ctx.beginPath();
+        ctx.roundRect(-48, 5, 96, 26, 10);
+        ctx.fill();
+        ctx.strokeStyle = '#1C1C1C';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(-48, 5, 96, 26, 10);
+        ctx.stroke();
+
+        // Track treads (animated) - clipped to track area
+        ctx.save();
+        ctx.beginPath();
+        ctx.roundRect(-48, 5, 96, 26, 10);
+        ctx.clip();
+
+        ctx.strokeStyle = '#1C1C1C';
+        ctx.lineWidth = 3;
+        for (let i = 0; i < 12; i++) {
+          const treadX = -46 + (i * 9 + this.bulldozer.trackOffset) % 99;
+          ctx.beginPath();
+          ctx.moveTo(treadX, 7);
+          ctx.lineTo(treadX, 29);
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        // Track wheels inside
+        ctx.fillStyle = '#1C1C1C';
+        // Back drive wheel (larger)
+        ctx.beginPath();
+        ctx.arc(-38, 18, 10, 0, Math.PI * 2);
+        ctx.fill();
+        // Front idler wheel (larger)
+        ctx.beginPath();
+        ctx.arc(38, 18, 10, 0, Math.PI * 2);
+        ctx.fill();
+        // Road wheels (smaller, in middle)
+        ctx.beginPath();
+        ctx.arc(-15, 18, 7, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(10, 18, 7, 0, Math.PI * 2);
+        ctx.fill();
+
+        // --- BODY (sits on top of tracks) ---
+        ctx.fillStyle = '#FFD700';
+        ctx.fillRect(-38, -10, 72, 18);
+
+        // Body stripes
+        ctx.fillStyle = '#FFA500';
+        ctx.fillRect(-38, -10, 72, 4);
+        ctx.fillRect(-38, 4, 72, 4);
+
+        // Body outline
+        ctx.strokeStyle = '#DAA520';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(-38, -10, 72, 18);
+
+        // --- CABIN (bigger, dark grey/black, pushed back) ---
+        ctx.fillStyle = '#3A3A3A';  // Dark grey
+        ctx.fillRect(-34, -38, 38, 29);
+        ctx.strokeStyle = '#1A1A1A';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(-34, -38, 38, 29);
+
+        // Front window (tall, toward front of cabin)
+        ctx.fillStyle = '#87CEEB';
+        ctx.fillRect(-8, -35, 10, 18);
+        ctx.strokeStyle = '#4682B4';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(-8, -35, 10, 18);
+
+        // Front window glare
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+        ctx.fillRect(-6, -33, 4, 6);
+
+        // Back window (smaller, driver area)
+        ctx.fillStyle = '#87CEEB';
+        ctx.fillRect(-30, -35, 12, 10);
+        ctx.strokeStyle = '#4682B4';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(-30, -35, 12, 10);
+
+        // Back window glare
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+        ctx.fillRect(-28, -33, 4, 4);
+
+        // --- EXHAUST ---
+        ctx.fillStyle = '#696969';
+        ctx.fillRect(-28, -50, 6, 14);
+
+        // Smoke puff when moving
+        if (this.isDragging && Math.random() > 0.7) {
+          ctx.fillStyle = 'rgba(100, 100, 100, 0.4)';
+          ctx.beginPath();
+          ctx.arc(-22, -50, 4 + Math.random() * 4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // --- SCOOP/BLADE ---
+        // Mounting bracket (connects body to arm pivot - drawn before rotation)
+        ctx.fillStyle = '#DAA520';
+        ctx.fillRect(28, -2, 14, 12); // Bracket on front of body
+
+        ctx.save();
+
+        // Scoop pivot point at front of body (connected to bracket)
+        const pivotX = 34;
+        const pivotY = 6;
+        ctx.translate(pivotX, pivotY);
+        ctx.rotate(this.bulldozer.scoopAngle * Math.PI / 180);
+
+        // Hydraulic arm (longer, extends to blade)
+        ctx.fillStyle = '#DAA520';
+        ctx.fillRect(-2, -5, 42, 10);
+
+        // Arm detail/ridge
+        ctx.fillStyle = '#B8860B';
+        ctx.fillRect(6, -3, 30, 6);
+
+        // Scoop blade (bigger)
+        ctx.fillStyle = '#C0C0C0';
+        ctx.beginPath();
+        ctx.moveTo(32, -18);
+        ctx.lineTo(52, -18);
+        ctx.lineTo(58, 18);
+        ctx.lineTo(32, 18);
+        ctx.closePath();
+        ctx.fill();
+
+        // Blade edge (cutting edge)
+        ctx.fillStyle = '#A9A9A9';
+        ctx.fillRect(52, -18, 6, 36);
+
+        // Blade shine
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+        ctx.fillRect(35, -14, 10, 26);
+
+        // Blade outline
+        ctx.strokeStyle = '#808080';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(32, -18);
+        ctx.lineTo(52, -18);
+        ctx.lineTo(58, 18);
+        ctx.lineTo(32, 18);
+        ctx.closePath();
+        ctx.stroke();
+
+        ctx.restore(); // End scoop transform
+        ctx.restore(); // End bulldozer transform
+      },
+
+      updateScore() {
+        document.getElementById('score').textContent = this.score;
+      },
+
+      gameLoop() {
+        this.update();
+        this.draw();
+        requestAnimationFrame(() => this.gameLoop());
+      }
+    };
+
+    window.addEventListener('load', () => game.init());
+  </script>
+</body>
+</html>

@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>🚜 Bulldozer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@700&family=Righteous&display=swap" rel="stylesheet">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: none;
+    }
+
+    body {
+      font-family: 'Fredoka', sans-serif;
+      background: #87CEEB;
+      overflow: hidden;
+      position: fixed;
+      width: 100%;
+      height: 100%;
+    }
+
+    #gameCanvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .ui {
+      position: fixed;
+      top: 20px;
+      left: 20px;
+      right: 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      pointer-events: none;
+      z-index: 100;
+    }
+
+    .score-panel {
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(10px);
+      padding: 12px 20px;
+      border-radius: 16px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+      pointer-events: auto;
+    }
+
+    .score-title {
+      font-size: 12px;
+      color: #F4A460;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 2px;
+    }
+
+    .score-value {
+      font-family: 'Righteous', cursive;
+      font-size: 28px;
+      color: #D2691E;
+      text-shadow: 2px 2px 0px rgba(139, 69, 19, 0.2);
+    }
+
+    .reset-btn {
+      background: linear-gradient(135deg, #FF6B6B 0%, #FF8E53 100%);
+      color: white;
+      border: none;
+      padding: 12px 20px;
+      border-radius: 16px;
+      font-family: 'Fredoka', sans-serif;
+      font-size: 16px;
+      font-weight: 700;
+      box-shadow: 0 4px 20px rgba(255, 107, 107, 0.4);
+      cursor: pointer;
+      pointer-events: auto;
+      transition: all 0.2s;
+    }
+
+    .reset-btn:active {
+      transform: scale(0.95);
+    }
+
+    .instructions {
+      position: fixed;
+      bottom: 30px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(10px);
+      padding: 16px 32px;
+      border-radius: 20px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+      font-size: 16px;
+      color: #8B4513;
+      font-weight: 700;
+      text-align: center;
+      z-index: 100;
+      animation: bounce 2s infinite;
+    }
+
+    @keyframes bounce {
+      0%, 100% { transform: translateX(-50%) translateY(0px); }
+      50% { transform: translateX(-50%) translateY(-10px); }
+    }
+
+    .particle {
+      position: fixed;
+      pointer-events: none;
+      animation: particleFly 0.8s ease-out forwards;
+      font-size: 20px;
+    }
+
+    @keyframes particleFly {
+      0% {
+        opacity: 1;
+        transform: translate(0, 0) scale(1);
+      }
+      100% {
+        opacity: 0;
+        transform: translate(var(--tx), var(--ty)) scale(0.5);
+      }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+  
+  <div class="ui">
+    <div class="score-panel">
+      <div class="score-title">Dirt Moved</div>
+      <div class="score-value" id="score">0</div>
+    </div>
+    <button class="reset-btn" onclick="game.reset()">🔄 Reset</button>
+  </div>
+
+  <div class="instructions" id="instructions">
+    👆 Drag to push dirt around!
+  </div>
+
+  <script>
+    const game = {
+      canvas: null,
+      ctx: null,
+      width: 0,
+      height: 0,
+      
+      // Grid-based terrain
+      gridSize: 15,
+      cols: 0,
+      rows: 0,
+      terrain: [],
+      
+      // Bulldozer
+      bulldozer: {
+        x: 0,
+        y: 0,
+        width: 70,
+        height: 50,
+        angle: 0,
+        bladeWidth: 60,
+        offsetY: 120 // Offset above touch point
+      },
+      
+      // Touch
+      isDragging: false,
+      touchX: 0,
+      touchY: 0,
+      lastTouchX: 0,
+      lastTouchY: 0,
+      
+      // Score
+      score: 0,
+      moveCounter: 0,
+      
+      init() {
+        this.canvas = document.getElementById('gameCanvas');
+        this.ctx = this.canvas.getContext('2d');
+        
+        this.resize();
+        window.addEventListener('resize', () => this.resize());
+        
+        // Touch events
+        this.canvas.addEventListener('touchstart', (e) => this.handleTouchStart(e), { passive: false });
+        this.canvas.addEventListener('touchmove', (e) => this.handleTouchMove(e), { passive: false });
+        this.canvas.addEventListener('touchend', (e) => this.handleTouchEnd(e), { passive: false });
+        
+        // Mouse events
+        this.canvas.addEventListener('mousedown', (e) => this.handleMouseDown(e));
+        this.canvas.addEventListener('mousemove', (e) => this.handleMouseMove(e));
+        this.canvas.addEventListener('mouseup', (e) => this.handleMouseUp(e));
+        
+        this.reset();
+        this.gameLoop();
+        
+        setTimeout(() => {
+          const inst = document.getElementById('instructions');
+          inst.style.transition = 'opacity 0.5s';
+          inst.style.opacity = '0';
+          setTimeout(() => inst.remove(), 500);
+        }, 3000);
+      },
+      
+      resize() {
+        this.width = window.innerWidth;
+        this.height = window.innerHeight;
+        this.canvas.width = this.width;
+        this.canvas.height = this.height;
+        
+        this.cols = Math.ceil(this.width / this.gridSize);
+        this.rows = Math.ceil(this.height / this.gridSize);
+        
+        this.initTerrain();
+      },
+      
+      initTerrain() {
+        this.terrain = [];
+        
+        for (let y = 0; y < this.rows; y++) {
+          this.terrain[y] = [];
+          for (let x = 0; x < this.cols; x++) {
+            // Create varied height terrain
+            let height = 0.3 + Math.random() * 0.4;
+            
+            // Add some hills
+            const centerX = this.cols / 2;
+            const centerY = this.rows / 2;
+            const distFromCenter = Math.hypot(x - centerX, y - centerY);
+            height += Math.sin(distFromCenter / 10) * 0.2;
+            
+            // Noise
+            height += (Math.sin(x * 0.3) * Math.cos(y * 0.2)) * 0.15;
+            
+            this.terrain[y][x] = {
+              height: Math.max(0.1, Math.min(1, height)),
+              vx: 0,
+              vy: 0
+            };
+          }
+        }
+      },
+      
+      reset() {
+        this.bulldozer.x = this.width / 2;
+        this.bulldozer.y = this.height / 2;
+        this.bulldozer.angle = 0;
+        
+        this.initTerrain();
+        
+        this.score = 0;
+        this.moveCounter = 0;
+        this.updateScore();
+      },
+      
+      handleTouchStart(e) {
+        e.preventDefault();
+        const touch = e.touches[0];
+        this.isDragging = true;
+        this.touchX = touch.clientX;
+        this.touchY = touch.clientY;
+        this.lastTouchX = touch.clientX;
+        this.lastTouchY = touch.clientY;
+      },
+      
+      handleTouchMove(e) {
+        e.preventDefault();
+        if (!this.isDragging) return;
+        
+        const touch = e.touches[0];
+        this.touchX = touch.clientX;
+        this.touchY = touch.clientY;
+      },
+      
+      handleTouchEnd(e) {
+        e.preventDefault();
+        this.isDragging = false;
+      },
+      
+      handleMouseDown(e) {
+        this.isDragging = true;
+        this.touchX = e.clientX;
+        this.touchY = e.clientY;
+        this.lastTouchX = e.clientX;
+        this.lastTouchY = e.clientY;
+      },
+      
+      handleMouseMove(e) {
+        if (!this.isDragging) return;
+        this.touchX = e.clientX;
+        this.touchY = e.clientY;
+      },
+      
+      handleMouseUp(e) {
+        this.isDragging = false;
+      },
+      
+      update() {
+        if (this.isDragging) {
+          // Position bulldozer above touch point
+          const targetX = this.touchX;
+          const targetY = this.touchY - this.bulldozer.offsetY;
+          
+          // Smooth movement
+          const dx = targetX - this.bulldozer.x;
+          const dy = targetY - this.bulldozer.y;
+          
+          this.bulldozer.x += dx * 0.15;
+          this.bulldozer.y += dy * 0.15;
+          
+          // Update angle
+          const movementX = this.touchX - this.lastTouchX;
+          const movementY = this.touchY - this.lastTouchY;
+          
+          if (Math.abs(movementX) > 1 || Math.abs(movementY) > 1) {
+            this.bulldozer.angle = Math.atan2(movementY, movementX);
+          }
+          
+          this.pushDirt();
+          
+          this.lastTouchX = this.touchX;
+          this.lastTouchY = this.touchY;
+        }
+        
+        // Update terrain physics
+        for (let y = 0; y < this.rows; y++) {
+          for (let x = 0; x < this.cols; x++) {
+            const cell = this.terrain[y][x];
+            
+            if (Math.abs(cell.vx) > 0.001 || Math.abs(cell.vy) > 0.001) {
+              const speed = Math.hypot(cell.vx, cell.vy);
+              
+              if (speed > 0.01 && cell.height > 0.05) {
+                const transferAmount = Math.min(cell.height * 0.1, speed * 0.05);
+                
+                const nx = Math.round(x + cell.vx * 2);
+                const ny = Math.round(y + cell.vy * 2);
+                
+                if (nx >= 0 && nx < this.cols && ny >= 0 && ny < this.rows) {
+                  cell.height -= transferAmount;
+                  this.terrain[ny][nx].height += transferAmount;
+                  
+                  this.score += Math.floor(transferAmount * 100);
+                  this.moveCounter++;
+                  
+                  if (this.moveCounter % 20 === 0) {
+                    this.updateScore();
+                  }
+                }
+              }
+              
+              cell.vx *= 0.85;
+              cell.vy *= 0.85;
+              
+              if (Math.abs(cell.vx) < 0.001) cell.vx = 0;
+              if (Math.abs(cell.vy) < 0.001) cell.vy = 0;
+            }
+            
+            cell.height = Math.max(0, Math.min(1, cell.height));
+          }
+        }
+        
+        if (Math.random() > 0.7) {
+          this.smoothTerrain();
+        }
+      },
+      
+      pushDirt() {
+        const bladeAngle = this.bulldozer.angle;
+        const bladeX = this.bulldozer.x + Math.cos(bladeAngle) * 35;
+        const bladeY = this.bulldozer.y + Math.sin(bladeAngle) * 35;
+        
+        const bladeWidth = this.bulldozer.bladeWidth;
+        const pushForce = 0.3;
+        
+        const perpX = -Math.sin(bladeAngle);
+        const perpY = Math.cos(bladeAngle);
+        
+        for (let i = -bladeWidth / 2; i < bladeWidth / 2; i += this.gridSize / 2) {
+          const checkX = bladeX + perpX * i;
+          const checkY = bladeY + perpY * i;
+          
+          const gridX = Math.floor(checkX / this.gridSize);
+          const gridY = Math.floor(checkY / this.gridSize);
+          
+          if (gridX >= 0 && gridX < this.cols && gridY >= 0 && gridY < this.rows) {
+            const cell = this.terrain[gridY][gridX];
+            
+            if (cell.height > 0.1) {
+              cell.vx += Math.cos(bladeAngle) * pushForce;
+              cell.vy += Math.sin(bladeAngle) * pushForce;
+              
+              if (Math.random() > 0.85) {
+                this.createParticle(checkX, checkY);
+              }
+            }
+          }
+        }
+      },
+      
+      smoothTerrain() {
+        const newTerrain = JSON.parse(JSON.stringify(this.terrain));
+        
+        for (let y = 1; y < this.rows - 1; y++) {
+          for (let x = 1; x < this.cols - 1; x++) {
+            const avg = (
+              this.terrain[y][x].height +
+              this.terrain[y-1][x].height +
+              this.terrain[y+1][x].height +
+              this.terrain[y][x-1].height +
+              this.terrain[y][x+1].height
+            ) / 5;
+            
+            newTerrain[y][x].height = this.terrain[y][x].height * 0.95 + avg * 0.05;
+          }
+        }
+        
+        this.terrain = newTerrain;
+      },
+      
+      draw() {
+        // Sky
+        const gradient = this.ctx.createLinearGradient(0, 0, 0, this.height);
+        gradient.addColorStop(0, '#87CEEB');
+        gradient.addColorStop(1, '#B0D4E3');
+        this.ctx.fillStyle = gradient;
+        this.ctx.fillRect(0, 0, this.width, this.height);
+        
+        // Terrain
+        for (let y = 0; y < this.rows; y++) {
+          for (let x = 0; x < this.cols; x++) {
+            const cell = this.terrain[y][x];
+            const height = cell.height;
+            
+            const brown = Math.floor(139 * (0.3 + height * 0.7));
+            const darkBrown = Math.floor(69 * (0.3 + height * 0.7));
+            const lightBrown = Math.floor(19 * (0.3 + height * 0.7));
+            
+            this.ctx.fillStyle = `rgb(${brown}, ${darkBrown}, ${lightBrown})`;
+            
+            const screenX = x * this.gridSize;
+            const screenY = y * this.gridSize;
+            const size = this.gridSize + 1;
+            
+            this.ctx.fillRect(screenX, screenY, size, size);
+            
+            if (height > 0.7) {
+              this.ctx.fillStyle = `rgba(222, 184, 135, ${(height - 0.7) * 0.5})`;
+              this.ctx.fillRect(screenX, screenY, size, size);
+            }
+          }
+        }
+        
+        // Bulldozer
+        this.ctx.save();
+        this.ctx.translate(this.bulldozer.x, this.bulldozer.y);
+        this.ctx.rotate(this.bulldozer.angle);
+        
+        // Shadow
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+        this.ctx.fillRect(-30, 30, 60, 8);
+        
+        // Blade
+        this.ctx.fillStyle = '#C0C0C0';
+        this.ctx.fillRect(25, -30, 6, 60);
+        this.ctx.fillStyle = '#E8E8E8';
+        this.ctx.fillRect(26, -28, 2, 56);
+        this.ctx.strokeStyle = '#A0A0A0';
+        this.ctx.lineWidth = 2;
+        this.ctx.strokeRect(25, -30, 6, 60);
+        
+        // Body
+        this.ctx.fillStyle = '#FFD700';
+        this.ctx.fillRect(-25, -20, 50, 40);
+        this.ctx.fillStyle = '#FFA500';
+        this.ctx.fillRect(-25, -20, 50, 5);
+        this.ctx.fillRect(-25, 15, 50, 5);
+        this.ctx.strokeStyle = '#DAA520';
+        this.ctx.lineWidth = 3;
+        this.ctx.strokeRect(-25, -20, 50, 40);
+        
+        // Window
+        this.ctx.fillStyle = '#87CEEB';
+        this.ctx.fillRect(-12, -12, 20, 16);
+        this.ctx.strokeStyle = '#4682B4';
+        this.ctx.lineWidth = 2;
+        this.ctx.strokeRect(-12, -12, 20, 16);
+        this.ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+        this.ctx.fillRect(-10, -10, 8, 6);
+        
+        // Tracks
+        this.ctx.fillStyle = '#2F4F4F';
+        this.ctx.fillRect(-30, -22, 8, 44);
+        this.ctx.fillRect(-30, -22, 8, 4);
+        this.ctx.fillRect(-30, 18, 8, 4);
+        this.ctx.fillRect(22, -22, 8, 44);
+        this.ctx.fillRect(22, -22, 8, 4);
+        this.ctx.fillRect(22, 18, 8, 4);
+        
+        this.ctx.strokeStyle = '#1C1C1C';
+        this.ctx.lineWidth = 1;
+        for (let i = -18; i < 18; i += 6) {
+          this.ctx.beginPath();
+          this.ctx.moveTo(-30, i);
+          this.ctx.lineTo(-22, i);
+          this.ctx.stroke();
+          this.ctx.beginPath();
+          this.ctx.moveTo(22, i);
+          this.ctx.lineTo(30, i);
+          this.ctx.stroke();
+        }
+        
+        // Exhaust
+        this.ctx.fillStyle = '#696969';
+        this.ctx.fillRect(-18, -25, 4, 8);
+        
+        if (this.isDragging && Math.random() > 0.6) {
+          this.ctx.fillStyle = 'rgba(100, 100, 100, 0.4)';
+          this.ctx.beginPath();
+          this.ctx.arc(-16, -28, 4 + Math.random() * 4, 0, Math.PI * 2);
+          this.ctx.fill();
+        }
+        
+        this.ctx.restore();
+        
+        // Touch indicator
+        if (this.isDragging) {
+          this.ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+          this.ctx.beginPath();
+          this.ctx.arc(this.touchX, this.touchY, 20, 0, Math.PI * 2);
+          this.ctx.fill();
+          this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+          this.ctx.lineWidth = 2;
+          this.ctx.stroke();
+        }
+      },
+      
+      createParticle(x, y) {
+        const particle = document.createElement('div');
+        particle.className = 'particle';
+        particle.textContent = '💨';
+        particle.style.left = x + 'px';
+        particle.style.top = y + 'px';
+        particle.style.setProperty('--tx', (Math.random() - 0.5) * 60 + 'px');
+        particle.style.setProperty('--ty', (Math.random() - 0.5) * 60 + 'px');
+        
+        document.body.appendChild(particle);
+        setTimeout(() => particle.remove(), 800);
+      },
+      
+      updateScore() {
+        document.getElementById('score').textContent = this.score;
+      },
+      
+      gameLoop() {
+        this.update();
+        this.draw();
+        requestAnimationFrame(() => this.gameLoop());
+      }
+    };
+
+    window.addEventListener('load', () => game.init());
+  </script>
+</body>
+</html>
